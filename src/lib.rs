@@ -1,12 +1,13 @@
+use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::thread;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt as _};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio::task::{consume_budget, spawn_blocking};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info};
@@ -56,7 +57,7 @@ async fn handle_connection(peer: SocketAddr, stream: TcpStream) -> anyhow::Resul
     let mut reader = pair.master.try_clone_reader()?;
     let _reader_handle = thread::spawn(move || {
         info!("💊 Start reading PTY");
-        let mut buffer = [0_u8; 64]; // Size ?
+        let mut buffer = [0_u8; 255]; // Size ?
         loop {
             let read = reader.read(&mut buffer);
             match read {
@@ -113,15 +114,40 @@ async fn handle_connection(peer: SocketAddr, stream: TcpStream) -> anyhow::Resul
                 continue;
             };
             info!(?msg, "🌀 incoming websocket message");
-            let bytes = match msg {
-                Message::Text(txt) => txt.as_bytes().to_vec(),
-                Message::Binary(data) => data,
+            let mut messages = vec![];
+            match msg {
+                Message::Text(txt) => {
+                    messages.push(txt.as_bytes().to_vec());
+                }
+                Message::Binary(data) => {
+                    let msg = serde_json::from_slice::<IncomingTermMessage>(&data)
+                        .expect("valid payload");
+                    info!("🌀 receive message {msg:?}");
+                    match msg {
+                        IncomingTermMessage::SetSize { rows, cols } => {
+                            let size = PtySize {
+                                rows,
+                                cols,
+                                ..Default::default()
+                            };
+                            pair.master.resize(size).expect("could resize");
+                        }
+                        IncomingTermMessage::WorkDir { path } => {
+                            messages.push(workdir(path));
+                        }
+                        IncomingTermMessage::Helix { workdir, file } => {
+                            messages.push(helix(workdir, file))
+                        }
+                    }
+                }
                 Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {
                     continue;
                 }
             };
-            if let Err(error) = tx_pty.send(bytes) {
-                error!(?error, "🌀 fail to send data for PTY");
+            for msg in messages {
+                if let Err(error) = tx_pty.send(msg) {
+                    error!(?error, "🌀 fail to send data for PTY");
+                }
             }
         }
         info!("🌀🌀 End reading WS");
@@ -138,16 +164,27 @@ async fn handle_connection(peer: SocketAddr, stream: TcpStream) -> anyhow::Resul
     Ok(())
 }
 
-enum IncomingTermMessage {
-    Reset,       // TODO with config
-    ResetEditor, // TODO special reset for helix (workdir, file, theme, config, ...)
-    SetSize,
-    Data,
-    Stop,
+fn workdir(workdir: String) -> Vec<u8> {
+    let mut result = vec![];
+    writeln!(&mut result, "cd {workdir:?}").expect("cd valid");
+    writeln!(&mut result, "clear").expect("clear valid");
+    result
 }
 
-enum OutgoingTermMessage {
-    SetSize,
-    Data,
-    Stop,
+fn helix(workdir: String, file: String) -> Vec<u8> {
+    let mut result = vec![];
+
+    writeln!(&mut result, "cd {workdir:?}").expect("cd valid");
+    writeln!(&mut result, "clear").expect("clear valid");
+    writeln!(&mut result, "hx {file:?}").expect("hx valid");
+
+    result
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "message", rename_all = "kebab-case")]
+enum IncomingTermMessage {
+    SetSize { rows: u16, cols: u16 },
+    WorkDir { path: String },
+    Helix { workdir: String, file: String },
 }

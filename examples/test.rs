@@ -62,14 +62,14 @@ fn main() {
         // This example doesn't need to write anything, but if you
         // want to send data to the child, you'd set `to_write` to
         // that data and do it like this:
-        let to_write = "";
-        if !to_write.is_empty() {
-            // To avoid deadlock, wrt. reading and waiting, we send
-            // data to the stdin of the child in a different thread.
-            std::thread::spawn(move || {
-                writer.write_all(to_write.as_bytes()).unwrap();
-            });
-        }
+        let to_write = "ls";
+        // if !to_write.is_empty() {
+        // To avoid deadlock, wrt. reading and waiting, we send
+        // data to the stdin of the child in a different thread.
+        std::thread::spawn(move || {
+            writer.write_all(to_write.as_bytes()).unwrap();
+        });
+        // }
     }
 
     // Wait for the child to complete
