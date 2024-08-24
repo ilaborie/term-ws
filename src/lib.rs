@@ -1,3 +1,4 @@
+use std::env::current_dir;
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::thread;
@@ -10,7 +11,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 #[tracing::instrument]
 pub async fn launch(port: u16) -> anyhow::Result<()> {
@@ -46,7 +47,10 @@ async fn handle_connection(peer: SocketAddr, stream: TcpStream) -> anyhow::Resul
         pixel_height: 0,
     };
     let pair = pty_system.openpty(size)?;
-    let cmd = CommandBuilder::new("fish");
+    let cwd = current_dir()?;
+    info!(?cwd, "Workding dir");
+    let mut cmd = CommandBuilder::new("fish");
+    cmd.cwd(cwd);
     let mut child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
 
@@ -113,7 +117,7 @@ async fn handle_connection(peer: SocketAddr, stream: TcpStream) -> anyhow::Resul
             let Ok(msg) = msg else {
                 continue;
             };
-            info!(?msg, "🌀 incoming websocket message");
+            debug!(?msg, "🌀 incoming websocket message");
             let mut messages = vec![];
             match msg {
                 Message::Text(txt) => {
@@ -144,6 +148,7 @@ async fn handle_connection(peer: SocketAddr, stream: TcpStream) -> anyhow::Resul
                     continue;
                 }
             };
+            // info!("🫶 Having {} messages to run", messages.len());
             for msg in messages {
                 if let Err(error) = tx_pty.send(msg) {
                     error!(?error, "🌀 fail to send data for PTY");
